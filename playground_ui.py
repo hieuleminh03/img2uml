@@ -169,6 +169,12 @@ def main():
     st.title("🎨 Image to UML Converter Playground")
     st.markdown("Upload diagram images and convert them to UML syntax with optional cropping features.")
     
+    # Initialize session state
+    if 'cropped_images' not in st.session_state:
+        st.session_state.cropped_images = []
+    if 'crop_names' not in st.session_state:
+        st.session_state.crop_names = []
+    
     # Sidebar configuration
     st.sidebar.header("⚙️ Configuration")
     
@@ -204,7 +210,12 @@ def main():
             help="Upload a diagram image to convert to UML"
         )
         
+        # Clear session state when new file is uploaded
         if uploaded_file is not None:
+            if 'last_uploaded_file' not in st.session_state or st.session_state.last_uploaded_file != uploaded_file.name:
+                st.session_state.cropped_images = []
+                st.session_state.crop_names = []
+                st.session_state.last_uploaded_file = uploaded_file.name
             # Load and display original image
             image = Image.open(uploaded_file)
             st.subheader("Original Image")
@@ -217,9 +228,6 @@ def main():
                 "Select cropping method:",
                 ["No cropping", "Manual crop", "Grid split", "Auto-detect regions"]
             )
-            
-            cropped_images = []
-            crop_names = []
             
             if crop_method == "Manual crop":
                 st.info("Use the sliders below to define crop region")
@@ -236,8 +244,8 @@ def main():
                     st.image(preview_img, caption="Crop Preview", use_container_width=True)
                     
                     cropped = ImageCropper.crop_image(image, crop_coords)
-                    cropped_images = [cropped]
-                    crop_names = ["Manual Crop"]
+                    st.session_state.cropped_images = [cropped]
+                    st.session_state.crop_names = ["Manual Crop"]
             
             elif crop_method == "Grid split":
                 st.info("Split image into a grid of smaller sections")
@@ -249,8 +257,8 @@ def main():
                     cols = st.number_input("Columns", min_value=1, max_value=10, value=2)
                 
                 if st.button("Generate Grid"):
-                    cropped_images = ImageCropper.split_image_grid(image, rows, cols)
-                    crop_names = [f"Grid {i//cols + 1}-{i%cols + 1}" for i in range(len(cropped_images))]
+                    st.session_state.cropped_images = ImageCropper.split_image_grid(image, rows, cols)
+                    st.session_state.crop_names = [f"Grid {i//cols + 1}-{i%cols + 1}" for i in range(len(st.session_state.cropped_images))]
             
             elif crop_method == "Auto-detect regions":
                 if OPENCV_AVAILABLE:
@@ -268,37 +276,37 @@ def main():
                         preview_img = display_image_with_crops(image, regions)
                         st.image(preview_img, caption=f"Detected {len(regions)} regions", use_container_width=True)
                         
-                        cropped_images = [ImageCropper.crop_image(image, region) for region in regions]
-                        crop_names = [f"Region {i+1}" for i in range(len(cropped_images))]
+                        st.session_state.cropped_images = [ImageCropper.crop_image(image, region) for region in regions]
+                        st.session_state.crop_names = [f"Region {i+1}" for i in range(len(st.session_state.cropped_images))]
                     else:
                         st.warning("No content regions detected. Try adjusting the minimum area or use manual/grid cropping.")
             
             else:  # No cropping
-                cropped_images = [image]
-                crop_names = ["Original"]
+                st.session_state.cropped_images = [image]
+                st.session_state.crop_names = ["Original"]
             
             # Display cropped images
-            if cropped_images:
+            if st.session_state.cropped_images:
                 st.subheader("🖼️ Images to Process")
                 
                 # Show thumbnails
-                cols = st.columns(min(len(cropped_images), 4))
-                for i, (img, name) in enumerate(zip(cropped_images, crop_names)):
+                cols = st.columns(min(len(st.session_state.cropped_images), 4))
+                for i, (img, name) in enumerate(zip(st.session_state.cropped_images, st.session_state.crop_names)):
                     with cols[i % 4]:
                         st.image(img, caption=name, use_container_width=True)
     
     with col2:
         st.header("🔄 Convert to UML")
         
-        if uploaded_file is not None and cropped_images:
+        if uploaded_file is not None and st.session_state.cropped_images:
             # Conversion options
             st.subheader("⚙️ Conversion Settings")
             
             selected_images = st.multiselect(
                 "Select images to convert:",
-                options=list(range(len(cropped_images))),
-                default=list(range(len(cropped_images))),
-                format_func=lambda x: crop_names[x]
+                options=list(range(len(st.session_state.cropped_images))),
+                default=list(range(len(st.session_state.cropped_images))),
+                format_func=lambda x: st.session_state.crop_names[x]
             )
             
             if st.button("🚀 Convert to UML", type="primary"):
@@ -312,8 +320,8 @@ def main():
                 for i, img_idx in enumerate(selected_images):
                     progress_bar.progress((i + 1) / len(selected_images))
                     
-                    img = cropped_images[img_idx]
-                    name = crop_names[img_idx]
+                    img = st.session_state.cropped_images[img_idx]
+                    name = st.session_state.crop_names[img_idx]
                     
                     with results_container:
                         st.subheader(f"📋 Results for {name}")
