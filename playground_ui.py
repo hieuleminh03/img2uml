@@ -9,10 +9,11 @@ with image cropping capabilities.
 import streamlit as st
 import os
 import tempfile
+import subprocess
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict
 import base64
 import io
 
@@ -165,6 +166,83 @@ def display_image_with_crops(image: Image.Image, crops: List[Tuple[int, int, int
     
     return img_copy
 
+def git_commit_and_push(message: str = "Auto-commit: UML conversion results") -> bool:
+    """Commit and push changes to git repository."""
+    try:
+        # Check if we're in a git repository
+        result = subprocess.run(['git', 'status'], capture_output=True, text=True)
+        if result.returncode != 0:
+            return False
+        
+        # Add all changes
+        subprocess.run(['git', 'add', '.'], check=True)
+        
+        # Commit changes
+        subprocess.run(['git', 'commit', '-m', message], check=True)
+        
+        # Push to remote
+        subprocess.run(['git', 'push'], check=True)
+        
+        return True
+    except subprocess.CalledProcessError:
+        return False
+    except FileNotFoundError:
+        return False
+
+def combine_uml_results(results: List[Dict]) -> str:
+    """Combine multiple UML conversion results into a single document."""
+    if not results:
+        return ""
+    
+    combined = "# Combined UML Results\n\n"
+    combined += f"Generated from {len(results)} image sections\n\n"
+    
+    for i, result in enumerate(results, 1):
+        if result.get("success") and result.get("uml_content"):
+            combined += f"## Section {i}: {result.get('name', f'Part {i}')}\n\n"
+            combined += result["uml_content"]
+            combined += "\n\n---\n\n"
+    
+    return combined
+
+def create_horizontal_results_view(results: List[Dict]) -> None:
+    """Create a horizontal scrollable view for results."""
+    if not results:
+        return
+    
+    st.subheader("📋 Conversion Results")
+    
+    # Create tabs for horizontal navigation
+    tab_names = [f"{result.get('name', f'Part {i+1}')}" for i, result in enumerate(results)]
+    tabs = st.tabs(tab_names)
+    
+    for i, (tab, result) in enumerate(zip(tabs, results)):
+        with tab:
+            if result.get("success"):
+                col_img, col_uml = st.columns([1, 2])
+                
+                with col_img:
+                    if result.get("image"):
+                        st.image(result["image"], caption=result.get("name", f"Part {i+1}"), use_container_width=True)
+                
+                with col_uml:
+                    st.markdown(result["uml_content"])
+                
+                # Usage info
+                if result.get("usage"):
+                    st.info(f"Tokens used: {result['usage'].get('total_tokens', 'N/A')}")
+                
+                # Individual download button
+                st.download_button(
+                    label=f"📥 Download UML for {result.get('name', f'Part {i+1}')}",
+                    data=result["uml_content"],
+                    file_name=f"{result.get('name', f'part_{i+1}').lower().replace(' ', '_')}_uml.md",
+                    mime="text/markdown",
+                    key=f"download_{i}"
+                )
+            else:
+                st.error(f"❌ Conversion failed: {result.get('error', 'Unknown error')}")
+
 def main():
     st.title("🎨 Image to UML Converter Playground")
     st.markdown("Upload diagram images and convert them to UML syntax with optional cropping features.")
@@ -174,6 +252,10 @@ def main():
         st.session_state.cropped_images = []
     if 'crop_names' not in st.session_state:
         st.session_state.crop_names = []
+    if 'conversion_results' not in st.session_state:
+        st.session_state.conversion_results = []
+    if 'combined_uml' not in st.session_state:
+        st.session_state.combined_uml = ""
     
     # Sidebar configuration
     st.sidebar.header("⚙️ Configuration")
@@ -215,6 +297,8 @@ def main():
             if 'last_uploaded_file' not in st.session_state or st.session_state.last_uploaded_file != uploaded_file.name:
                 st.session_state.cropped_images = []
                 st.session_state.crop_names = []
+                st.session_state.conversion_results = []
+                st.session_state.combined_uml = ""
                 st.session_state.last_uploaded_file = uploaded_file.name
             # Load and display original image
             image = Image.open(uploaded_file)
@@ -309,67 +393,100 @@ def main():
                 format_func=lambda x: st.session_state.crop_names[x]
             )
             
+            # Git options
+            st.subheader("🔧 Git Options")
+            auto_commit = st.checkbox("Auto-commit and push after conversion", value=False)
+            commit_message = st.text_input("Commit message", value="Auto-commit: UML conversion results")
+            
             if st.button("🚀 Convert to UML", type="primary"):
                 if not selected_images:
                     st.warning("Please select at least one image to convert.")
                     return
                 
                 progress_bar = st.progress(0)
-                results_container = st.container()
+                st.session_state.conversion_results = []
                 
+                # Process all selected images
                 for i, img_idx in enumerate(selected_images):
                     progress_bar.progress((i + 1) / len(selected_images))
                     
                     img = st.session_state.cropped_images[img_idx]
                     name = st.session_state.crop_names[img_idx]
                     
-                    with results_container:
-                        st.subheader(f"📋 Results for {name}")
+                    with st.spinner(f"Converting {name}..."):
+                        # Save image temporarily
+                        temp_path = save_temp_image(img)
                         
-                        with st.spinner(f"Converting {name}..."):
-                            # Save image temporarily
-                            temp_path = save_temp_image(img)
+                        try:
+                            # Convert to UML
+                            result = converter.convert_image_to_uml(temp_path)
                             
+                            # Store result with additional metadata
+                            result_data = {
+                                "name": name,
+                                "image": img,
+                                "success": result["success"],
+                                "uml_content": result.get("uml_content", ""),
+                                "usage": result.get("usage", {}),
+                                "error": result.get("error", "")
+                            }
+                            st.session_state.conversion_results.append(result_data)
+                        
+                        finally:
+                            # Clean up temporary file
                             try:
-                                # Convert to UML
-                                result = converter.convert_image_to_uml(temp_path)
-                                
-                                if result["success"]:
-                                    st.success(f"✅ Conversion successful!")
-                                    
-                                    # Display results
-                                    col_img, col_uml = st.columns([1, 2])
-                                    
-                                    with col_img:
-                                        st.image(img, caption=name, use_container_width=True)
-                                    
-                                    with col_uml:
-                                        st.markdown(result["uml_content"])
-                                    
-                                    # Usage info
-                                    if result.get("usage"):
-                                        st.info(f"Tokens used: {result['usage'].get('total_tokens', 'N/A')}")
-                                    
-                                    # Download button
-                                    st.download_button(
-                                        label=f"📥 Download UML for {name}",
-                                        data=result["uml_content"],
-                                        file_name=f"{name.lower().replace(' ', '_')}_uml.md",
-                                        mime="text/markdown"
-                                    )
-                                
-                                else:
-                                    st.error(f"❌ Conversion failed: {result['error']}")
-                            
-                            finally:
-                                # Clean up temporary file
-                                try:
-                                    os.unlink(temp_path)
-                                except:
-                                    pass
+                                os.unlink(temp_path)
+                            except:
+                                pass
                 
                 progress_bar.progress(1.0)
+                
+                # Generate combined UML
+                st.session_state.combined_uml = combine_uml_results(st.session_state.conversion_results)
+                
                 st.success("🎉 All conversions completed!")
+                
+                # Auto-commit if enabled
+                if auto_commit and st.session_state.combined_uml:
+                    with st.spinner("Committing and pushing to git..."):
+                        if git_commit_and_push(commit_message):
+                            st.success("✅ Successfully committed and pushed to git!")
+                        else:
+                            st.warning("⚠️ Git commit/push failed. Make sure you're in a git repository with proper remote setup.")
+            
+            # Display results if available
+            if st.session_state.conversion_results:
+                # Horizontal scrollable results view
+                create_horizontal_results_view(st.session_state.conversion_results)
+                
+                # Combined results section
+                st.subheader("📄 Combined Results")
+                
+                if st.session_state.combined_uml:
+                    # Show combined UML in an expandable section
+                    with st.expander("View Combined UML", expanded=False):
+                        st.markdown(st.session_state.combined_uml)
+                    
+                    # Download combined results
+                    st.download_button(
+                        label="📥 Download Combined UML",
+                        data=st.session_state.combined_uml,
+                        file_name="combined_uml_results.md",
+                        mime="text/markdown",
+                        type="primary"
+                    )
+                    
+                    # Summary statistics
+                    successful_conversions = sum(1 for r in st.session_state.conversion_results if r["success"])
+                    total_tokens = sum(r.get("usage", {}).get("total_tokens", 0) for r in st.session_state.conversion_results)
+                    
+                    col_stats1, col_stats2, col_stats3 = st.columns(3)
+                    with col_stats1:
+                        st.metric("Successful Conversions", f"{successful_conversions}/{len(st.session_state.conversion_results)}")
+                    with col_stats2:
+                        st.metric("Total Tokens Used", total_tokens)
+                    with col_stats3:
+                        st.metric("Grid Sections", len(st.session_state.conversion_results))
         
         elif uploaded_file is None:
             st.info("👆 Upload an image to get started")
