@@ -9,7 +9,6 @@ with image cropping capabilities.
 import streamlit as st
 import os
 import tempfile
-import subprocess
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
@@ -166,44 +165,115 @@ def display_image_with_crops(image: Image.Image, crops: List[Tuple[int, int, int
     
     return img_copy
 
-def git_commit_and_push(message: str = "Auto-commit: UML conversion results") -> bool:
-    """Commit and push changes to git repository."""
-    try:
-        # Check if we're in a git repository
-        result = subprocess.run(['git', 'status'], capture_output=True, text=True)
-        if result.returncode != 0:
-            return False
-        
-        # Add all changes
-        subprocess.run(['git', 'add', '.'], check=True)
-        
-        # Commit changes
-        subprocess.run(['git', 'commit', '-m', message], check=True)
-        
-        # Push to remote
-        subprocess.run(['git', 'push'], check=True)
-        
-        return True
-    except subprocess.CalledProcessError:
-        return False
-    except FileNotFoundError:
-        return False
-
-def combine_uml_results(results: List[Dict]) -> str:
-    """Combine multiple UML conversion results into a single document."""
+def combine_uml_with_llm(results: List[Dict], converter) -> Dict:
+    """Use LLM to intelligently combine multiple UML results into a single coherent diagram."""
     if not results:
-        return ""
+        return {"success": False, "error": "No results to combine"}
     
-    combined = "# Combined UML Results\n\n"
-    combined += f"Generated from {len(results)} image sections\n\n"
+    # Extract successful UML content
+    successful_results = [r for r in results if r.get("success") and r.get("uml_content")]
     
-    for i, result in enumerate(results, 1):
-        if result.get("success") and result.get("uml_content"):
-            combined += f"## Section {i}: {result.get('name', f'Part {i}')}\n\n"
-            combined += result["uml_content"]
-            combined += "\n\n---\n\n"
+    if not successful_results:
+        return {"success": False, "error": "No successful conversions to combine"}
     
-    return combined
+    # Create combination prompt
+    combination_prompt = """
+Please analyze these UML diagram sections and combine them into a single, coherent UML diagram.
+
+Instructions:
+1. Identify relationships between elements across different sections
+2. Remove duplicate elements that appear in multiple sections
+3. Merge related classes, interfaces, or components
+4. Maintain proper UML syntax and relationships
+5. Create a unified, well-structured diagram
+6. If sections represent different diagram types, create the most appropriate unified representation
+
+Here are the UML sections to combine:
+
+"""
+    
+    for i, result in enumerate(successful_results, 1):
+        combination_prompt += f"## Section {i} ({result.get('name', f'Part {i}')}):\n"
+        combination_prompt += result["uml_content"]
+        combination_prompt += "\n\n"
+    
+    combination_prompt += """
+Please provide:
+**Combined UML Diagram:**
+```plantuml
+[unified UML code here]
+```
+
+**Integration Notes:** [explain how sections were combined and any assumptions made]
+"""
+    
+    try:
+        # Use the converter to process the combination prompt
+        # Create a temporary text file with the prompt
+        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+        temp_file.write(combination_prompt)
+        temp_file.close()
+        
+        # Prepare the request for text-only processing
+        headers = {"Content-Type": "application/json"}
+        
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": combination_prompt
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 3000
+            }
+        }
+        
+        import requests
+        response = requests.post(converter.api_url, headers=headers, json=payload)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        # Extract content from Gemini response
+        if 'candidates' in result and len(result['candidates']) > 0:
+            content = result['candidates'][0]['content']['parts'][0]['text']
+            usage_metadata = result.get('usageMetadata', {})
+        else:
+            raise Exception("No valid response from Gemini API")
+        
+        # Clean up temp file
+        try:
+            os.unlink(temp_file.name)
+        except:
+            pass
+        
+        return {
+            "success": True,
+            "combined_uml": content,
+            "usage": usage_metadata,
+            "sections_combined": len(successful_results),
+            "error": None
+        }
+        
+    except Exception as e:
+        # Clean up temp file
+        try:
+            os.unlink(temp_file.name)
+        except:
+            pass
+        
+        return {
+            "success": False,
+            "error": f"LLM combination failed: {str(e)}",
+            "combined_uml": None,
+            "usage": {},
+            "sections_combined": 0
+        }
 
 def create_horizontal_results_view(results: List[Dict]) -> None:
     """Create a horizontal scrollable view for results."""
@@ -393,10 +463,9 @@ def main():
                 format_func=lambda x: st.session_state.crop_names[x]
             )
             
-            # Git options
-            st.subheader("🔧 Git Options")
-            auto_commit = st.checkbox("Auto-commit and push after conversion", value=False)
-            commit_message = st.text_input("Commit message", value="Auto-commit: UML conversion results")
+            # Combination options
+            st.subheader("🔧 Combination Options")
+            auto_combine = st.checkbox("Auto-combine results using LLM", value=True, help="Use AI to intelligently merge grid sections into a single coherent UML diagram")
             
             if st.button("🚀 Convert to UML", type="primary"):
                 if not selected_images:
@@ -440,19 +509,26 @@ def main():
                                 pass
                 
                 progress_bar.progress(1.0)
-                
-                # Generate combined UML
-                st.session_state.combined_uml = combine_uml_results(st.session_state.conversion_results)
-                
                 st.success("🎉 All conversions completed!")
                 
-                # Auto-commit if enabled
-                if auto_commit and st.session_state.combined_uml:
-                    with st.spinner("Committing and pushing to git..."):
-                        if git_commit_and_push(commit_message):
-                            st.success("✅ Successfully committed and pushed to git!")
+                # Auto-combine using LLM if enabled
+                if auto_combine and len(st.session_state.conversion_results) > 1:
+                    with st.spinner("🤖 Combining results using AI..."):
+                        combination_result = combine_uml_with_llm(st.session_state.conversion_results, converter)
+                        
+                        if combination_result["success"]:
+                            st.session_state.combined_uml = combination_result["combined_uml"]
+                            st.session_state.combination_usage = combination_result["usage"]
+                            st.success(f"✅ Successfully combined {combination_result['sections_combined']} sections into unified UML!")
                         else:
-                            st.warning("⚠️ Git commit/push failed. Make sure you're in a git repository with proper remote setup.")
+                            st.error(f"❌ LLM combination failed: {combination_result['error']}")
+                            st.session_state.combined_uml = ""
+                else:
+                    # If only one result or auto-combine disabled, use simple combination
+                    if len(st.session_state.conversion_results) == 1:
+                        st.session_state.combined_uml = st.session_state.conversion_results[0].get("uml_content", "")
+                    else:
+                        st.session_state.combined_uml = ""
             
             # Display results if available
             if st.session_state.conversion_results:
@@ -460,18 +536,18 @@ def main():
                 create_horizontal_results_view(st.session_state.conversion_results)
                 
                 # Combined results section
-                st.subheader("📄 Combined Results")
+                st.subheader("📄 AI-Combined UML Result")
                 
                 if st.session_state.combined_uml:
                     # Show combined UML in an expandable section
-                    with st.expander("View Combined UML", expanded=False):
+                    with st.expander("View AI-Combined UML", expanded=True):
                         st.markdown(st.session_state.combined_uml)
                     
                     # Download combined results
                     st.download_button(
-                        label="📥 Download Combined UML",
+                        label="📥 Download AI-Combined UML",
                         data=st.session_state.combined_uml,
-                        file_name="combined_uml_results.md",
+                        file_name="ai_combined_uml.md",
                         mime="text/markdown",
                         type="primary"
                     )
@@ -479,14 +555,22 @@ def main():
                     # Summary statistics
                     successful_conversions = sum(1 for r in st.session_state.conversion_results if r["success"])
                     total_tokens = sum(r.get("usage", {}).get("total_tokens", 0) for r in st.session_state.conversion_results)
+                    combination_tokens = getattr(st.session_state, 'combination_usage', {}).get('total_tokens', 0)
                     
-                    col_stats1, col_stats2, col_stats3 = st.columns(3)
+                    col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
                     with col_stats1:
                         st.metric("Successful Conversions", f"{successful_conversions}/{len(st.session_state.conversion_results)}")
                     with col_stats2:
-                        st.metric("Total Tokens Used", total_tokens)
-                    with col_stats3:
                         st.metric("Grid Sections", len(st.session_state.conversion_results))
+                    with col_stats3:
+                        st.metric("Conversion Tokens", total_tokens)
+                    with col_stats4:
+                        st.metric("Combination Tokens", combination_tokens)
+                        
+                elif len(st.session_state.conversion_results) > 1:
+                    st.info("💡 Enable 'Auto-combine results using LLM' to get an AI-generated unified UML diagram from all grid sections.")
+                else:
+                    st.info("ℹ️ Single section converted - no combination needed.")
         
         elif uploaded_file is None:
             st.info("👆 Upload an image to get started")
