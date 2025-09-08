@@ -24,7 +24,7 @@ class ImageToUMLConverter:
         if not self.api_key:
             raise ValueError("Gemini API key not found. Please set GEMINI_API_KEY environment variable.")
         
-        self.api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.api_key}"
+        self.api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={self.api_key}"
         self.supported_formats = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
         
     def encode_image_to_base64(self, image_path: str) -> str:
