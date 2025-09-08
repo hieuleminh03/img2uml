@@ -10,12 +10,19 @@ import streamlit as st
 import os
 import tempfile
 from pathlib import Path
-from PIL import Image, ImageDraw
-import cv2
+from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
 from typing import Tuple, Optional, List
 import base64
 import io
+
+# Try to import OpenCV, but make it optional
+try:
+    import cv2
+    OPENCV_AVAILABLE = True
+except ImportError:
+    OPENCV_AVAILABLE = False
+    st.warning("⚠️ OpenCV not available. Auto-detect regions feature will use simplified edge detection.")
 
 from image_to_uml_converter import ImageToUMLConverter
 
@@ -58,6 +65,14 @@ class ImageCropper:
     @staticmethod
     def detect_content_regions(image: Image.Image, min_area: int = 1000) -> List[Tuple[int, int, int, int]]:
         """Detect content regions using edge detection."""
+        if OPENCV_AVAILABLE:
+            return ImageCropper._detect_regions_opencv(image, min_area)
+        else:
+            return ImageCropper._detect_regions_pil(image, min_area)
+    
+    @staticmethod
+    def _detect_regions_opencv(image: Image.Image, min_area: int) -> List[Tuple[int, int, int, int]]:
+        """OpenCV-based region detection."""
         # Convert PIL to OpenCV format
         img_array = np.array(image)
         if len(img_array.shape) == 3:
@@ -76,6 +91,57 @@ class ImageCropper:
             x, y, w, h = cv2.boundingRect(contour)
             if w * h > min_area:  # Filter small regions
                 regions.append((x, y, x + w, y + h))
+        
+        return regions
+    
+    @staticmethod
+    def _detect_regions_pil(image: Image.Image, min_area: int) -> List[Tuple[int, int, int, int]]:
+        """PIL-based simplified region detection."""
+        # Convert to grayscale
+        if image.mode != 'L':
+            gray = image.convert('L')
+        else:
+            gray = image
+        
+        # Apply edge detection using PIL filters
+        edges = gray.filter(ImageFilter.FIND_EDGES)
+        
+        # Convert to numpy for processing
+        edge_array = np.array(edges)
+        
+        # Simple thresholding
+        threshold = np.mean(edge_array) + np.std(edge_array)
+        binary = edge_array > threshold
+        
+        # Find connected components (simplified)
+        regions = []
+        height, width = binary.shape
+        
+        # Simple region growing approach
+        visited = np.zeros_like(binary)
+        
+        for y in range(0, height, 20):  # Sample every 20 pixels
+            for x in range(0, width, 20):
+                if binary[y, x] and not visited[y, x]:
+                    # Find bounding box of this region
+                    min_x, max_x = x, x
+                    min_y, max_y = y, y
+                    
+                    # Expand region
+                    for dy in range(-50, 51, 10):
+                        for dx in range(-50, 51, 10):
+                            ny, nx = y + dy, x + dx
+                            if 0 <= ny < height and 0 <= nx < width and binary[ny, nx]:
+                                min_x = min(min_x, nx)
+                                max_x = max(max_x, nx)
+                                min_y = min(min_y, ny)
+                                max_y = max(max_y, ny)
+                                visited[ny, nx] = True
+                    
+                    # Check if region is large enough
+                    area = (max_x - min_x) * (max_y - min_y)
+                    if area > min_area:
+                        regions.append((min_x, min_y, max_x, max_y))
         
         return regions
 
@@ -187,12 +253,16 @@ def main():
                     crop_names = [f"Grid {i//cols + 1}-{i%cols + 1}" for i in range(len(cropped_images))]
             
             elif crop_method == "Auto-detect regions":
-                st.info("Automatically detect content regions using edge detection")
+                if OPENCV_AVAILABLE:
+                    st.info("Automatically detect content regions using OpenCV edge detection")
+                else:
+                    st.info("Automatically detect content regions using simplified edge detection (OpenCV not available)")
                 
                 min_area = st.slider("Minimum region area", 500, 10000, 1000)
                 
                 if st.button("Detect Regions"):
-                    regions = ImageCropper.detect_content_regions(image, min_area)
+                    with st.spinner("Detecting regions..."):
+                        regions = ImageCropper.detect_content_regions(image, min_area)
                     
                     if regions:
                         preview_img = display_image_with_crops(image, regions)
@@ -201,7 +271,7 @@ def main():
                         cropped_images = [ImageCropper.crop_image(image, region) for region in regions]
                         crop_names = [f"Region {i+1}" for i in range(len(cropped_images))]
                     else:
-                        st.warning("No content regions detected. Try adjusting the minimum area.")
+                        st.warning("No content regions detected. Try adjusting the minimum area or use manual/grid cropping.")
             
             else:  # No cropping
                 cropped_images = [image]

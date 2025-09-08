@@ -133,14 +133,43 @@ The playground will open in your browser at `http://localhost:8501`
 
 - **streamlit**: Web interface framework
 - **Pillow**: Image processing
-- **opencv-python**: Computer vision for auto-detection
+- **opencv-python**: Computer vision for auto-detection (optional)
 - **numpy**: Numerical operations
 - **requests**: HTTP client for API calls
 - **python-dotenv**: Environment variable management
 
+**Note**: OpenCV is optional. If not available, the app will use PIL-based edge detection for auto-crop features.
+
 ## API Usage
 
 The playground uses Google's Gemini 1.5 Flash API with vision capabilities. Token usage is displayed after each conversion. Cropping can help reduce token consumption by focusing on relevant diagram content.
+
+## Deployment
+
+### Streamlit Cloud Deployment
+
+1. **Fork/Clone** this repository
+2. **Connect** to Streamlit Cloud
+3. **Add** your `GEMINI_API_KEY` in Streamlit Cloud secrets
+4. **Deploy** - the app will automatically handle OpenCV dependencies
+
+### Local Development
+
+```bash
+# Clone the repository
+git clone <your-repo-url>
+cd img2uml
+
+# Set up virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the playground
+streamlit run playground_ui.py
+```
 
 ## Contributing
 
