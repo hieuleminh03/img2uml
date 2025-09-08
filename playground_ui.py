@@ -363,8 +363,10 @@ def main():
                 progress_bar.progress(1.0)
                 st.success("🎉 All conversions completed!")
         
-        else:
+        elif uploaded_file is None:
             st.info("👆 Upload an image to get started")
+        else:
+            st.info("👈 Select a cropping method and generate images to convert")
     
     # Footer
     st.markdown("---")
